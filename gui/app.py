@@ -16,6 +16,7 @@ from scanner.ping_scanner import check_devices
 from scanner.oui_db import lookup, is_random_mac
 from scanner.network_stats import get_traffic_stats
 from scanner.connections import get_connections, get_network_graph
+from scanner.packet_monitor import get_activity, start_monitoring
 from tracker.device_db import (
     init_db, get_all_devices, upsert_device, get_device_history,
     get_stats, get_timeline
@@ -231,6 +232,13 @@ def api_network_graph():
     return jsonify(get_network_graph())
 
 
+@app.route('/api/activity')
+def api_activity():
+    """Get real-time network activity data."""
+    return jsonify(get_activity())
+
+
 def create_app():
     init_db()
+    start_monitoring()  # start network activity capture
     return app

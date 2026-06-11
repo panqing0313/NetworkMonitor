@@ -644,3 +644,162 @@ body {
 
 /* ===== Selection ===== */
 ::selection { background: var(--blue-glow); color: var(--text); }
+
+/* ===== Tabs ===== */
+.tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.tab-btn {
+    padding: 10px 24px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition);
+    font-family: var(--font);
+}
+
+.tab-btn:hover {
+    color: var(--text);
+    background: var(--bg-card-hover);
+}
+
+.tab-btn.active {
+    color: var(--text);
+    border-bottom-color: var(--blue);
+}
+
+/* ===== Activity Page ===== */
+#view-activity {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.activity-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+    margin-bottom: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.activity-count {
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.activity-list {
+    flex: 1;
+    overflow-y: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius);
+    min-height: 0;
+}
+
+.activity-table {
+    width: 100%;
+    font-size: 12px;
+}
+
+.act-header, .act-row {
+    display: grid;
+    grid-template-columns: 60px 1fr 30px 1fr 2fr 60px 80px;
+    gap: 4px;
+    padding: 6px 12px;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+}
+
+.act-header {
+    color: var(--text-muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    background: var(--bg-card);
+    z-index: 1;
+}
+
+.act-row:hover {
+    background: var(--bg-card-hover);
+}
+
+.act-proto {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 3px;
+    text-align: center;
+}
+
+.proto-arp { background: rgba(234,179,8,0.12); color: var(--yellow); }
+.proto-dns { background: rgba(59,130,246,0.12); color: var(--blue); }
+.proto-tcp { background: rgba(34,197,94,0.12); color: var(--green); }
+.proto-udp { background: rgba(167,139,250,0.12); color: var(--purple); }
+.proto-ip, .proto-icmp { background: rgba(139,148,158,0.12); color: var(--text-secondary); }
+
+.act-src, .act-dst {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.act-arrow {
+    color: var(--text-muted);
+    font-size: 11px;
+    text-align: center;
+}
+
+.act-info {
+    color: var(--text-secondary);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.act-size {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    text-align: right;
+}
+
+.act-time {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    text-align: right;
+}
+
+.status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+}
+.status-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green-glow); }
+.status-dot.red { background: var(--red); }

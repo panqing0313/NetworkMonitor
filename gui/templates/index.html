@@ -442,11 +442,65 @@
         }
 
         // ─── Init ───
+        let activeTab = 'overview';
+
+        function switchTab(tab) {
+            activeTab = tab;
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(`tab-${tab}`).classList.add('active');
+            document.getElementById('view-overview').style.display = tab === 'overview' ? '' : 'none';
+            document.getElementById('view-activity').style.display = tab === 'activity' ? '' : 'none';
+            if (tab === 'activity') refreshActivity();
+        }
+
+        function renderActivity(data) {
+            const el = document.getElementById('activity-list');
+            const status = document.getElementById('activity-status');
+            const count = document.getElementById('activity-count');
+
+            if (!data) { el.innerHTML = '<div class="empty-state">等待数据...</div>'; return; }
+
+            status.textContent = data.capturing ? '🟢 捕获中' : '🔴 已停止';
+            status.innerHTML = data.capturing ? '<span class="status-dot green"></span> 捕获中' : '<span class="status-dot red"></span> 已停止';
+            count.textContent = `${data.total_events} 条 · ${data.protocols.map(p => `${p.protocol}:${p.count}`).join(' | ')}`;
+
+            if (!data.recent || !data.recent.length) {
+                el.innerHTML = '<div class="empty-state">暂无网络活动数据</div>';
+                return;
+            }
+
+            let html = '<div class="activity-table"><div class="act-header"><span>协议</span><span>源地址</span><span>→</span><span>目标地址</span><span>信息</span><span>大小</span><span>时间</span></div>';
+            for (const e of data.recent) {
+                const protoClass = e.protocol.toLowerCase();
+                const time = new Date(e.time);
+                const timeStr = time.toLocaleTimeString();
+                html += `<div class="act-row">
+                    <span class="act-proto proto-${protoClass}">${e.protocol}</span>
+                    <span class="act-src">${e.src || '-'}</span>
+                    <span class="act-arrow">→</span>
+                    <span class="act-dst">${e.dst || '-'}</span>
+                    <span class="act-info">${e.info || '-'}</span>
+                    <span class="act-size">${e.size ? e.size + 'B' : '-'}</span>
+                    <span class="act-time">${timeStr}</span>
+                </div>`;
+            }
+            html += '</div>';
+            el.innerHTML = html;
+        }
+
+        async function refreshActivity() {
+            try {
+                const data = await api('/api/activity');
+                renderActivity(data);
+            } catch(e) {}
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             updateGraph();
             refreshAll();
             setInterval(updateGraph, GRAPH_REFRESH);
             setInterval(refreshAll, DEVICE_REFRESH);
+            setInterval(refreshActivity, 2000);
         });
 
         // Close modals on click outside
@@ -467,11 +521,18 @@
             </div>
         </header>
 
-        <div id="stats-bar" class="stats-bar"><div class="stat-card"><span class="stat-label">加载中...</span></div></div>
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('overview')" id="tab-overview">概览</button>
+            <button class="tab-btn" onclick="switchTab('activity')" id="tab-activity">网络活动</button>
+        </div>
 
-        <!-- Three-column layout: Device List | Graph+Traffic | Timeline -->
-        <div class="main-grid">
-            <!-- Left: Device List (1) -->
+        <!-- Overview Tab -->
+        <div id="view-overview">
+            <div id="stats-bar" class="stats-bar"><div class="stat-card"><span class="stat-label">加载中...</span></div></div>
+
+            <div class="main-grid">
+                <!-- Left: Device List (1) -->
             <div class="card device-card">
                 <div class="card-header"><h2>📱 设备列表</h2></div>
                 <div id="device-list" class="device-list"><div class="empty-state">加载中...</div></div>
@@ -497,6 +558,18 @@
             <div class="card timeline-card">
                 <div class="card-header"><h2>📋 活动记录</h2></div>
                 <div id="timeline-list" class="timeline-list"><div class="empty-state">加载中...</div></div>
+            </div>
+        </div>  <!-- end main-grid -->
+        </div>  <!-- end view-overview -->
+
+        <!-- Activity Tab -->
+        <div id="view-activity" style="display:none">
+            <div class="activity-toolbar">
+                <span class="activity-status" id="activity-status">等待数据...</span>
+                <span class="activity-count" id="activity-count">0 条</span>
+            </div>
+            <div id="activity-list" class="activity-list">
+                <div class="empty-state">等待网络活动数据...</div>
             </div>
         </div>
 
