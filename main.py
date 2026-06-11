@@ -147,6 +147,12 @@ def cli_scan(config):
 
 def start_desktop(config):
     """Start the desktop application using pywebview."""
+    # Suppress Flask/Werkzeug console output
+    import logging
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
+    logging.getLogger('flask').setLevel(logging.ERROR)
+
     init_db()
 
     # Import here (Flask + pywebview)
@@ -156,8 +162,13 @@ def start_desktop(config):
     app = create_app()
     port = config['web_port']
 
-    # Flask server thread
+    # Flask server thread (no logs)
     def run_flask():
+        import sys
+        # Redirect stdout/stderr to prevent console flashing on Windows
+        if hasattr(sys, 'frozen'):  # running as PyInstaller bundle
+            sys.stdout = open(os.devnull, 'w')
+            sys.stderr = open(os.devnull, 'w')
         app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)
 
     flask_thread = threading.Thread(target=run_flask, daemon=True)

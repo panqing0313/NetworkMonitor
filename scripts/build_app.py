@@ -110,7 +110,8 @@ def build_windows():
         icon = ''  # no icon, pyinstaller will use default
 
     cmd = [sys.executable, '-m', 'PyInstaller',
-        '--name', APP_NAME, '--windowed', '--onedir']
+        '--name', APP_NAME, '--windowed', '--onedir',
+        '--hide-console', 'hide-early']
     if icon:
         cmd.append(f'--icon={icon}')
     cmd += [
