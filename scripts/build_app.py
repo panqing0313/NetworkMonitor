@@ -2,15 +2,14 @@
 """Cross-platform build script for Network Monitor.
 
 Usage:
-    python3 scripts/build_app.py        # build for current platform
-    python3 scripts/build_app.py --dmg  # macOS: also create DMG
+    python scripts/build_app.py          # build for current platform
+    python scripts/build_app.py --dmg    # macOS: also create DMG
 """
+import os, sys, shutil, subprocess, platform
 
-import os
-import sys
-import shutil
-import subprocess
-import platform
+# Fix Windows console encoding
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # type: ignore
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IS_MAC = sys.platform == 'darwin'
@@ -18,8 +17,17 @@ IS_WIN = sys.platform == 'win32'
 APP_NAME = 'Network Monitor'
 
 
+def log(msg):
+    """Print without emoji to avoid Windows encoding issues."""
+    clean = msg.replace('\U0001f9f9', '[CLEAN]').replace('\U0001f4e6', '[PACK]') \
+                .replace('\U0001f4c0', '[DMG]').replace('\u274c', '[FAIL]') \
+                .replace('\u2705', '[OK]').replace('\u26a0\ufe0f', '[WARN]') \
+                .replace('\U0001f3d7\ufe0f', '[BUILD]').replace('\u23f3', '[WAIT]')
+    print(clean)
+
+
 def clean():
-    print("🧹 清理旧构建...")
+    log("[CLEAN] Cleaning old builds...")
     for d in ['build', 'dist']:
         p = os.path.join(PROJECT_ROOT, d)
         if os.path.exists(p):
@@ -30,15 +38,13 @@ def clean():
 
 
 def build_macos():
-    """Build macOS .app bundle using PyInstaller."""
-    print(f"📦 构建 macOS .app...")
-
+    log("[PACK] Building macOS .app...")
     icon = os.path.join(PROJECT_ROOT, 'NetworkMonitor.app', 'Contents', 'Resources', 'icon.icns')
+    if not os.path.exists(icon):
+        icon = os.path.join(PROJECT_ROOT, 'gui', 'static', 'd3.min.js')  # fallback
 
-    cmd = [
-        sys.executable, '-m', 'PyInstaller',
-        '--name', APP_NAME,
-        '--windowed', '--onedir',
+    cmd = [sys.executable, '-m', 'PyInstaller',
+        '--name', APP_NAME, '--windowed', '--onedir',
         f'--icon={icon}',
         '--add-data', f'gui/templates{os.pathsep}templates',
         '--add-data', f'gui/static{os.pathsep}static',
@@ -59,22 +65,20 @@ def build_macos():
         '--collect-submodules', 'flask',
         '--collect-submodules', 'werkzeug',
         '--osx-bundle-identifier', 'com.local.network-monitor',
-        '-y',
-        'main.py',
-    ]
+        '-y', 'main.py']
+
     result = subprocess.run(cmd, cwd=PROJECT_ROOT, text=True)
     if result.returncode != 0:
-        print("❌ 构建失败")
+        log("[FAIL] macOS build failed")
         sys.exit(1)
-    print("✅ macOS 构建完成")
+    log("[OK] macOS build complete")
 
 
 def build_dmg():
-    """Create macOS DMG from built .app."""
-    print("📀 创建 DMG...")
+    log("[DMG] Creating DMG...")
     app_path = os.path.join(PROJECT_ROOT, 'dist', f'{APP_NAME}.app')
     if not os.path.exists(app_path):
-        print("❌ 未找到 .app，请先构建")
+        log("[FAIL] .app not found, build first")
         return
 
     dmg_name = f'{APP_NAME.replace(" ", "_")}_v1.0.dmg'
@@ -87,38 +91,29 @@ def build_dmg():
 
     shutil.copytree(app_path, os.path.join(tmp_dir, f'{APP_NAME}.app'),
                     symlinks=True, dirs_exist_ok=True)
-
-    # Create Applications shortcut
     os.symlink('/Applications', os.path.join(tmp_dir, 'Applications'))
 
-    # README
-    with open(os.path.join(tmp_dir, '说明.txt'), 'w') as f:
-        f.write('Network Monitor v1.0\n拖入 Applications 文件夹即可安装\n')
-
-    subprocess.run([
-        'hdiutil', 'create', '-volname', 'Network Monitor',
-        '-srcfolder', tmp_dir, '-ov', '-format', 'UDZO', dmg_path
-    ], check=True)
+    subprocess.run(['hdiutil', 'create', '-volname', 'Network Monitor',
+        '-srcfolder', tmp_dir, '-ov', '-format', 'UDZO', dmg_path], check=True)
 
     shutil.rmtree(tmp_dir)
     size = os.path.getsize(dmg_path) / 1024 / 1024
-    print(f"✅ DMG: {dmg_name} ({size:.0f}MB)")
+    log(f"[OK] DMG: {dmg_name} ({size:.0f}MB)")
 
 
 def build_windows():
-    """Build Windows executable using PyInstaller."""
-    print(f"📦 构建 Windows .exe...")
+    log("[PACK] Building Windows .exe...")
 
+    # Windows needs .ico icon, not .icns
     icon = os.path.join(PROJECT_ROOT, 'gui', 'static', 'icon.ico')
     if not os.path.exists(icon):
-        icon = os.path.join(PROJECT_ROOT, 'NetworkMonitor.app',
-                            'Contents', 'Resources', 'icon.icns')
+        icon = ''  # no icon, pyinstaller will use default
 
-    cmd = [
-        sys.executable, '-m', 'PyInstaller',
-        '--name', APP_NAME,
-        '--windowed', '--onedir',
-        f'--icon={icon}' if icon else '',
+    cmd = [sys.executable, '-m', 'PyInstaller',
+        '--name', APP_NAME, '--windowed', '--onedir']
+    if icon:
+        cmd.append(f'--icon={icon}')
+    cmd += [
         '--add-data', f'gui/templates{os.pathsep}templates',
         '--add-data', f'gui/static{os.pathsep}static',
         '--add-data', f'config.yaml{os.pathsep}.',
@@ -137,26 +132,22 @@ def build_windows():
         '--collect-submodules', 'webview',
         '--collect-submodules', 'flask',
         '--collect-submodules', 'werkzeug',
-        '-y',
-        'main.py',
-    ]
-    # Remove empty args
-    cmd = [c for c in cmd if c]
+        '-y', 'main.py']
 
     result = subprocess.run(cmd, cwd=PROJECT_ROOT, text=True)
     if result.returncode != 0:
-        print("❌ Windows 构建失败")
+        log("[FAIL] Windows build failed")
         sys.exit(1)
 
     exe_path = os.path.join(PROJECT_ROOT, 'dist', APP_NAME)
-    print(f"✅ Windows 构建完成: {exe_path}")
+    log(f"[OK] Windows build complete: {exe_path}")
 
 
 def main():
-    print(f"🏗️  Network Monitor 构建工具")
-    print(f"   平台: {platform.system()} {platform.machine()}")
-    print(f"   Python: {sys.version.split()[0]}")
-    print()
+    log("[BUILD] Network Monitor Build Tool")
+    log(f"  Platform: {platform.system()} {platform.machine()}")
+    log(f"  Python: {sys.version.split()[0]}")
+    log("")
 
     clean()
 
@@ -164,19 +155,19 @@ def main():
         build_macos()
         if '--dmg' in sys.argv:
             build_dmg()
-        print(f"\n📦 产物: {os.path.join(PROJECT_ROOT, 'dist', f'{APP_NAME}.app')}")
+        log(f"\n[OK] Output: {os.path.join(PROJECT_ROOT, 'dist', f'{APP_NAME}.app')}")
     elif IS_WIN:
         build_windows()
-        print(f"\n📦 产物: {os.path.join(PROJECT_ROOT, 'dist', APP_NAME)}")
+        log(f"\n[OK] Output: {os.path.join(PROJECT_ROOT, 'dist', APP_NAME)}")
     else:
-        print("⚠️  当前平台暂不支持自动打包")
+        log("[WARN] Platform not supported for automated build")
 
     # Show size
     dist = os.path.join(PROJECT_ROOT, 'dist')
     if os.path.exists(dist):
         size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in
                    os.walk(dist) for f in fn) / 1024 / 1024
-        print(f"   总大小: {size:.0f}MB")
+        log(f"  Total size: {size:.0f}MB")
 
 
 if __name__ == '__main__':
