@@ -1,0 +1,100 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # push tag v1.0、v2.0 时自动构建
+  workflow_dispatch:  # 也可以手动触发
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller flask pywebview pyyaml
+
+      - name: Build macOS .app
+        run: |
+          python scripts/build_app.py
+
+      - name: Create DMG
+        run: |
+          python scripts/build_app.py --dmg
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Network-Monitor-macOS
+          path: dist/Network_Monitor_v1.0.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller flask pywebview pyyaml
+
+      - name: Build Windows .exe
+        run: |
+          python scripts/build_app.py
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Network-Monitor-Windows
+          path: dist/Network Monitor/
+
+      - name: Create Windows installer (ZIP)
+        run: |
+          Compress-Archive -Path "dist/Network Monitor/*" -DestinationPath "dist/Network_Monitor_v1.0_win.zip"
+
+      - name: Upload Windows ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Network-Monitor-Windows-ZIP
+          path: dist/Network_Monitor_v1.0_win.zip
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Network-Monitor-macOS
+          path: release
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Network-Monitor-Windows-ZIP
+          path: release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*
+          body: |
+            ## 📡 Network Monitor v${{ github.ref_name }}
+
+            ### macOS
+            - `Network_Monitor_v1.0.dmg` — 双击安装
+
+            ### Windows
+            - `Network_Monitor_v1.0_win.zip` — 解压运行 `Network Monitor.exe`
+
+            ### 更新说明
+            - 自动构建

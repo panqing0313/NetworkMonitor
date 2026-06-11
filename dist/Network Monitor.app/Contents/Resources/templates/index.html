@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Monitor - 局域网设备监测</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/d3.min.js"></script>
+    <script>
+        const GRAPH_REFRESH = 3000;
+        const DEVICE_REFRESH = 5000;
+        const TRAFFIC_REFRESH = 2000;
+
+        async function api(url) {
+            const r = await fetch(url);
+            return r.json();
+        }
+
+        function formatSpeed(kbps) {
+            if (kbps >= 1000) return (kbps / 1000).toFixed(1) + ' Mbps';
+            return kbps.toFixed(0) + ' Kbps';
+        }
+
+        function formatBytes(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0, val = bytes;
+            while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
+            return val.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+        }
+
+        // ─── Stats Bar ───
+        function renderStats(stats, lastScan, gateway, gwDevice) {
+            let html = `
+                <div class="stat-card"><span class="stat-value">${stats.online_now}</span><span class="stat-label">在线</span></div>
+                <div class="stat-card"><span class="stat-value">${stats.total_devices}</span><span class="stat-label">总设备</span></div>
+                <div class="stat-card"><span class="stat-value">${stats.new_today}</span><span class="stat-label">今日新发现</span></div>`;
+            if (gateway) {
+                const gn = gwDevice ? gwDevice.hostname || '网关' : '网关';
+                html += `<div class="stat-card gw-card"><span class="stat-value gw-ip">${gateway}</span><span class="stat-label">🌐 ${gn}</span></div>`;
+            }
+            html += `<div class="stat-card scan-time"><span class="stat-label">${lastScan ? '扫描 ' + new Date(lastScan).toLocaleTimeString() : '等待扫描'}</span></div>`;
+            return html;
+        }
+
+        // ─── Traffic Panel ───
+        function renderTraffic(traffic) {
+            if (!traffic || !traffic.interfaces) return '<div class="traffic-empty">等待数据...</div>';
+            const iface = traffic.active_interface;
+            const data = traffic.interfaces[iface] || Object.values(traffic.interfaces)[0];
+            if (!data) return '<div class="traffic-empty">暂无数据</div>';
+            return `
+                <div class="traffic-row">
+                    <div class="traffic-item down">
+                        <span class="traffic-arrow">⬇️</span>
+                        <span class="traffic-value">${formatSpeed(data.down_kbps)}</span>
+                        <span class="traffic-label">下载</span>
+                    </div>
+                    <div class="traffic-item up">
+                        <span class="traffic-arrow">⬆️</span>
+                        <span class="traffic-value">${formatSpeed(data.up_kbps)}</span>
+                        <span class="traffic-label">上传</span>
+                    </div>
+                    <div class="traffic-item conn" onclick="showConnections()">
+                        <span class="traffic-arrow">🔗</span>
+                        <span class="traffic-value" id="conn-count">0</span>
+                        <span class="traffic-label">连接</span>
+                    </div>
+                </div>
+                <div class="traffic-total">
+                    <span>总计: ${formatBytes(data.total_mb_down * 1024 * 1024)} ↓ / ${formatBytes(data.total_mb_up * 1024 * 1024)} ↑</span>
+                    <span class="traffic-iface">${iface}</span>
+                </div>`;
+        }
+
+        // ─── D3 Network Graph ───
+        let simulation = null;
+
+        function drawGraph(data) {
+            const el = document.getElementById('network-graph');
+            const width = el.clientWidth || 900;
+            const height = 420;
+            const cx = width / 2, cy = height / 2;
+            el.innerHTML = '';
+
+            const svg = d3.select(el).append('svg')
+                .attr('width', width).attr('height', height);
+
+            // ── Defs ──
+            const defs = svg.append('defs');
+
+            // Node gradients
+            ['local', 'lan', 'wan'].forEach((t, i) => {
+                const colors = [['#3b82f6','#1d4ed8'], ['#22c55e','#15803d'], ['#eab308','#a16207']];
+                const g = defs.append('radialGradient').attr('id', `node-${t}`)
+                    .attr('cx', '35%').attr('cy', '35%').attr('r', '65%');
+                g.append('stop').attr('offset', '0%').attr('stop-color', colors[i][0]).attr('stop-opacity', 1);
+                g.append('stop').attr('offset', '100%').attr('stop-color', colors[i][1]).attr('stop-opacity', 1);
+            });
+
+            // Edge gradients - color along edge
+            ['lan', 'wan'].forEach((t, i) => {
+                const colors = [['#22c55e','#16a34a'], ['#eab308','#ca8a04']];
+                const g = defs.append('linearGradient').attr('id', `edge-${t}`)
+                    .attr('x1', '0%').attr('y1', '0%').attr('x2', '100%').attr('y2', '0%');
+                g.append('stop').attr('offset', '0%').attr('stop-color', colors[i][0]).attr('stop-opacity', 0.6);
+                g.append('stop').attr('offset', '100%').attr('stop-color', colors[i][1]).attr('stop-opacity', 0.2);
+            });
+
+            // Background gradient
+            const bgGrad = defs.append('radialGradient').attr('id', 'bg-glow')
+                .attr('cx', '50%').attr('cy', '50%').attr('r', '50%');
+            bgGrad.append('stop').attr('offset', '0%').attr('stop-color', '#3b82f6').attr('stop-opacity', 0.04);
+            bgGrad.append('stop').attr('offset', '100%').attr('stop-color', '#3b82f6').attr('stop-opacity', 0);
+
+            // Glow filter
+            const filter = defs.append('filter').attr('id', 'glow').attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%');
+            filter.append('feGaussianBlur').attr('stdDeviation', '3').attr('result', 'blur');
+            filter.append('feMerge').append('feMergeNode').attr('in', 'blur');
+            filter.append('feMerge').append('feMergeNode').attr('in', 'SourceGraphic');
+
+            // ── Background ──
+            svg.append('rect').attr('width', width).attr('height', height).attr('fill', 'url(#bg-glow)');
+
+            // Radar rings
+            for (let i = 1; i <= 3; i++) {
+                svg.append('circle').attr('cx', cx).attr('cy', cy)
+                    .attr('r', 50 + i * 70).attr('fill', 'none')
+                    .attr('stroke', 'rgba(59,130,246,0.04)').attr('stroke-width', 1)
+                    .attr('stroke-dasharray', '4,4');
+            }
+
+            // Crosshair lines
+            for (let a = 0; a < 360; a += 60) {
+                const rad = a * Math.PI / 180;
+                const x2 = cx + 280 * Math.cos(rad), y2 = cy + 280 * Math.sin(rad);
+                svg.append('line').attr('x1', cx).attr('y1', cy).attr('x2', x2).attr('y2', y2)
+                    .attr('stroke', 'rgba(59,130,246,0.03)').attr('stroke-width', 1);
+            }
+
+            // ── Data prep ──
+            const nodes = data.nodes.map(n => ({ ...n }));
+            const edges = data.edges.map(e => ({ ...e }));
+
+            // Color maps
+            const nodeColor = d => d.type === 'local' ? '#3b82f6' : d.type === 'lan' ? '#22c55e' : '#eab308';
+            const edgeColor = d => d.type === 'lan' ? 'rgba(34,197,94,0.25)' : 'rgba(234,179,8,0.25)';
+            const edgeActiveColor = d => d.type === 'lan' ? 'rgba(34,197,94,0.45)' : 'rgba(234,179,8,0.45)';
+
+            // ── Force simulation ──
+            simulation = d3.forceSimulation(nodes)
+                .force('center', d3.forceCenter(cx, cy))
+                .force('charge', d3.forceManyBody().strength(d => d.type === 'local' ? -400 : -200))
+                .force('link', d3.forceLink(edges).distance(d => d.type === 'lan' ? 110 : 170).strength(0.25))
+                .force('collision', d3.forceCollide().radius(d => d.size + 16))
+                .alphaDecay(0.03);
+
+            // ── Container ──
+            const g = svg.append('g');
+            svg.call(d3.zoom().scaleExtent([0.3, 4]).on('zoom', e => g.attr('transform', e.transform)));
+
+            // ── Edges ──
+            const link = g.append('g').selectAll('line')
+                .data(edges).join('line')
+                .attr('stroke', d => d.active ? edgeActiveColor(d) : edgeColor(d))
+                .attr('stroke-width', d => d.active ? (d.count ? Math.min(d.count * 0.6, 3) : 1.5) : 0.8)
+                .attr('stroke-dasharray', d => d.active ? null : '4,4')
+                .attr('opacity', d => d.active ? 0.8 : 0.4);
+
+            // Edge labels
+            const edgeLabels = g.append('g').selectAll('text')
+                .data(edges.filter(d => d.active)).join('text')
+                .text(d => d.label || '')
+                .attr('fill', d => d.type === 'lan' ? 'rgba(34,197,94,0.5)' : 'rgba(234,179,8,0.5)')
+                .attr('font-size', '9px').attr('font-family', 'SF Mono, monospace')
+                .attr('text-anchor', 'middle').attr('dy', '-4');
+
+            // ── Nodes ──
+            const node = g.append('g').selectAll('g')
+                .data(nodes).join('g')
+                .call(d3.drag()
+                    .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+                    .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+                    .on('end', (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+                )
+                .on('click', (e, d) => {
+                    if (d.type === 'lan' && d.ip) showDevice(d.ip);
+                    if (d.type === 'external') showConnections();
+                })
+                .on('mouseenter', function() { d3.select(this).raise(); });
+
+            // Outer glow circle
+            node.append('circle')
+                .attr('r', d => d.size * 2.2)
+                .attr('fill', d => d.type === 'local' ? 'rgba(59,130,246,0.08)' :
+                    d.type === 'lan' ? 'rgba(34,197,94,0.06)' : 'rgba(234,179,8,0.06)')
+                .attr('filter', 'url(#glow)');
+
+            // Main node circle (gradient fill)
+            node.append('circle')
+                .attr('r', d => d.size)
+                .attr('fill', d => `url(#node-${d.type === 'external' ? 'wan' : d.type})`)
+                .attr('stroke', d => d.type === 'local' ? 'rgba(59,130,246,0.6)' :
+                    d.type === 'lan' ? 'rgba(34,197,94,0.5)' : 'rgba(234,179,8,0.5)')
+                .attr('stroke-width', d => d.type === 'local' ? 3 : 2)
+                .style('cursor', 'pointer');
+
+            // Inner bright dot
+            node.append('circle')
+                .attr('r', d => d.size * 0.35)
+                .attr('fill', 'rgba(255,255,255,0.6)')
+                .attr('cx', d => -d.size * 0.25)
+                .attr('cy', d => -d.size * 0.25);
+
+            // Node label
+            node.append('text')
+                .text(d => d.label)
+                .attr('text-anchor', 'middle')
+                .attr('dy', d => d.size + 16)
+                .attr('fill', d => nodeColor(d))
+                .attr('font-size', d => d.type === 'local' ? '13px' : '11px')
+                .attr('font-weight', d => d.type === 'local' ? '700' : '500')
+                .style('text-shadow', '0 2px 8px rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.6)')
+                .style('pointer-events', 'none')
+                .style('font-family', '-apple-system, sans-serif');
+
+            // Sub-label (IP) for LAN nodes
+            node.filter(d => d.type === 'lan' && d.ip)
+                .append('text')
+                .text(d => d.ip)
+                .attr('text-anchor', 'middle')
+                .attr('dy', d => d.size + 30)
+                .attr('fill', 'rgba(139,148,158,0.6)')
+                .attr('font-size', '9px')
+                .style('font-family', 'SF Mono, monospace')
+                .style('text-shadow', '0 1px 4px rgba(0,0,0,0.8)');
+
+            // ── Pulse ring on local node ──
+            const pulse = node.filter(d => d.type === 'local').append('circle')
+                .attr('r', d => d.size * 1.3)
+                .attr('fill', 'none')
+                .attr('stroke', 'rgba(59,130,246,0.6)')
+                .attr('stroke-width', 2);
+
+            function doPulse() {
+                pulse.transition().ease(d3.easeQuad).duration(2000)
+                    .attr('r', d => d.size * 3)
+                    .attr('opacity', 0)
+                    .on('end', function() {
+                        d3.select(this).attr('r', d => d.size * 1.3).attr('opacity', 0.8);
+                        doPulse();
+                    });
+            }
+            doPulse();
+
+            // ── Particles on active edges ──
+            function spawnParticles() {
+                const active = edges.filter(e => e.active);
+                if (!active.length) return;
+                const pGroup = g.append('g');
+                active.forEach(edge => {
+                    for (let i = 0; i < 2; i++) {
+                        const p = pGroup.append('circle')
+                            .attr('r', 2.5)
+                            .attr('fill', edge.type === 'lan' ? '#22c55e' : '#eab308')
+                            .attr('opacity', 0);
+                        moveParticle(p, edge);
+                    }
+                });
+            }
+
+            function moveParticle(p, edge) {
+                const dur = 2000 + Math.random() * 2000;
+                const delay = Math.random() * 2000;
+                p.transition().delay(delay).duration(dur).ease(d3.easeLinear)
+                    .attrTween('opacity', () => t => {
+                        const a = edge.source.id !== undefined ? edge.source : nodes.find(n => n.id === edge.source);
+                        const b = edge.target.id !== undefined ? edge.target : nodes.find(n => n.id === edge.target);
+                        if (!a || !b || a.x === undefined) { return 0; }
+                        const x = a.x + (b.x - a.x) * t;
+                        const y = a.y + (b.y - a.y) * t;
+                        p.attr('cx', x).attr('cy', y);
+                        return t < 0.1 ? t / 0.1 : t > 0.9 ? (1 - t) / 0.1 : 0.7;
+                    })
+                    .on('end', () => moveParticle(p, edge));
+            }
+
+            // ── Tick ──
+            simulation.on('tick', () => {
+                link
+                    .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+                edgeLabels
+                    .attr('x', d => (d.source.x + d.target.x) / 2)
+                    .attr('y', d => (d.source.y + d.target.y) / 2);
+                node.attr('transform', d => `translate(${d.x},${d.y})`);
+            });
+
+            setTimeout(spawnParticles, 1500);
+        }
+
+        function updateGraph() {
+            api('/api/network-graph').then(data => {
+                if (simulation) {
+                    const n = data.nodes, e = data.edges;
+                    simulation.nodes(n);
+                    simulation.force('link').links(e);
+                    simulation.alpha(0.5).restart();
+                } else {
+                    drawGraph(data);
+                }
+            });
+        }
+
+        // ─── Connection Modal ───
+        function showConnections() {
+            api('/api/connections').then(data => {
+                const modal = document.getElementById('conn-modal');
+                document.getElementById('conn-title').textContent = `🔗 活动连接 (${data.total_connections})`;
+
+                let html = '<div class="detail-section"><h3>🌐 外网连接</h3>';
+                if (data.external.length === 0) html += '<div class="empty-state">暂无外网连接</div>';
+                for (const c of data.external.slice(0, 30)) {
+                    html += `<div class="conn-row">
+                        <span class="conn-service">${c.service}</span>
+                        <span class="conn-ip">${c.remote_ip}:${c.remote_port}</span>
+                        <span class="conn-state ${c.state === 'ESTABLISHED' ? 'established' : 'other'}">${c.state}</span>
+                    </div>`;
+                }
+                html += '</div><div class="detail-section"><h3>🏠 内网连接</h3>';
+                if (data.internal.length === 0) html += '<div class="empty-state">暂无内网连接</div>';
+                for (const c of data.internal.slice(0, 20)) {
+                    html += `<div class="conn-row">
+                        <span class="conn-ip">${c.remote_ip}:${c.remote_port}</span>
+                        <span class="conn-state ${c.state === 'ESTABLISHED' ? 'established' : 'other'}">${c.state}</span>
+                    </div>`;
+                }
+                html += '</div>';
+                document.getElementById('conn-list').innerHTML = html;
+                modal.classList.add('show');
+            });
+        }
+
+        function closeConnModal() { document.getElementById('conn-modal').classList.remove('show'); }
+
+        // ─── Device List ───
+        function renderDevices(devices) {
+            if (!devices.length) return '<div class="empty-state">尚未发现设备，点击扫描</div>';
+            const sorted = [...devices].sort((a, b) => {
+                if (a.online !== b.online) return a.online ? -1 : 1;
+                return (a.hostname || a.ip).localeCompare(b.hostname || b.ip);
+            });
+            let html = '';
+            for (const d of sorted) {
+                const t = d.device_type !== 'Unknown' ? `<span class="type-badge type-${d.device_type.toLowerCase()}">${d.device_type}</span>` : '';
+                const v = d.vendor !== 'Unknown' ? `<span class="vendor-badge">${d.vendor}</span>` : '';
+                const r = d.rtt_ms ? `<span class="rtt">${d.rtt_ms}ms</span>` : '';
+                const gw = d.device_type === 'Router' ? '<span class="gw-badge">网关</span>' : '';
+                html += `<div class="device-row ${d.online ? 'online' : 'offline'}" onclick="showDevice('${d.ip}')">
+                    <div class="device-status">${d.online ? '🟢' : '🔴'}</div>
+                    <div class="device-info">
+                        <div class="device-name"><strong>${d.hostname || '?'}</strong> ${gw}${v}${t}</div>
+                        <div class="device-meta">
+                            <span class="meta-ip">${d.ip}</span>
+                            ${d.mac ? `<span class="meta-mac">${d.mac}${d.is_random_mac ? '🎭' : ''}</span>` : ''}
+                            ${r}
+                        </div>
+                    </div>
+                </div>`;
+            }
+            return html;
+        }
+
+        function renderTimeline(events) {
+            if (!events.length) return '<div class="empty-state">暂无事件记录</div>';
+            return events.slice(0, 40).map(e => `
+                <div class="event-row ${e.event}">
+                    <span class="event-icon">${e.event === 'online' ? '🟢上线' : '🔴离线'}</span>
+                    <span class="event-device">${e.hostname || e.ip}</span>
+                    <span class="event-time">${new Date(e.timestamp).toLocaleTimeString()}</span>
+                </div>`).join('');
+        }
+
+        // ─── Device Detail Modal ───
+        async function showDevice(ip) {
+            const data = await api(`/api/device/${encodeURIComponent(ip)}`);
+            const d = data.device;
+            const modal = document.getElementById('device-modal');
+            document.getElementById('modal-title').textContent = d.hostname || d.ip;
+            const hist = data.history || [];
+            const onlinePct = hist.length ? Math.round(hist.filter(h => h.online).length / hist.length * 100) : 0;
+            document.getElementById('modal-status').innerHTML = `
+                <div class="detail-section"><div class="detail-grid">
+                    <div class="detail-item"><label>IP</label><span>${d.ip}</span></div>
+                    <div class="detail-item"><label>MAC</label><span>${d.mac || '-'} ${d.is_random_mac ? '🎭' : ''}</span></div>
+                    <div class="detail-item"><label>厂商</label><span>${d.vendor}</span></div>
+                    <div class="detail-item"><label>类型</label><span>${d.device_type}</span></div>
+                    <div class="detail-item"><label>状态</label><span class="${d.online ? 'text-green' : 'text-red'}">${d.online ? '🟢在线' : '🔴离线'}</span></div>
+                    <div class="detail-item"><label>延迟</label><span>${d.rtt_ms ? d.rtt_ms + 'ms' : '-'}</span></div>
+                    <div class="detail-item"><label>首次发现</label><span>${d.first_seen ? new Date(d.first_seen).toLocaleString() : '-'}</span></div>
+                    <div class="detail-item"><label>最后在线</label><span>${d.last_seen ? new Date(d.last_seen).toLocaleString() : '-'}</span></div>
+                </div></div>
+                <div class="detail-section"><h3>在线率</h3>
+                    <div class="uptime-bar"><div class="uptime-fill" style="width:${onlinePct}%">${onlinePct}%</div></div>
+                </div>`;
+            document.getElementById('modal-history').innerHTML = hist.length ? `
+                <div class="detail-section"><h3>历史记录</h3>${hist.slice(0, 40).map(h =>
+                    `<div class="history-item ${h.online ? 'on' : 'off'}"><span>${h.online ? '🟢' : '🔴'}</span><span>${h.rtt_ms ? h.rtt_ms+'ms' : '-'}</span><span class="history-time">${new Date(h.timestamp).toLocaleString()}</span></div>`
+                ).join('')}</div>` : '';
+            modal.classList.add('show');
+        }
+
+        function closeModal() { document.getElementById('device-modal').classList.remove('show'); }
+
+        // ─── Scan ───
+        async function startScan() {
+            const btn = document.getElementById('scan-btn');
+            btn.disabled = true; btn.textContent = '⏳ 扫描中...';
+            await fetch('/api/scan', { method: 'POST' });
+            let att = 0;
+            const poll = setInterval(async () => {
+                att++;
+                try {
+                    const d = await api('/api/devices');
+                    if (d.last_scan) { clearInterval(poll); btn.disabled = false; btn.textContent = '🔍 扫描'; }
+                } catch(e) { if (att > 20) { clearInterval(poll); btn.disabled = false; btn.textContent = '🔍 扫描'; }}
+            }, 2000);
+        }
+
+        // ─── Refresh Loop ───
+        async function refreshAll() {
+            try {
+                const [dev, time, gate, traff] = await Promise.all([
+                    api('/api/devices'), api('/api/timeline?hours=24'),
+                    api('/api/gateway'), api('/api/traffic'),
+                ]);
+                document.getElementById('stats-bar').innerHTML = renderStats(dev.stats, dev.last_scan, gate.gateway_ip, gate.gateway_device);
+                document.getElementById('device-list').innerHTML = renderDevices(dev.devices);
+                document.getElementById('timeline-list').innerHTML = renderTimeline(time.events);
+                document.getElementById('traffic-panel').innerHTML = renderTraffic(traff);
+            } catch(e) { console.error('refresh err:', e); }
+        }
+
+        // ─── Init ───
+        document.addEventListener('DOMContentLoaded', () => {
+            updateGraph();
+            refreshAll();
+            setInterval(updateGraph, GRAPH_REFRESH);
+            setInterval(refreshAll, DEVICE_REFRESH);
+        });
+
+        // Close modals on click outside
+        document.addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal')) e.target.classList.remove('show');
+        });
+    </script>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-left">
+                <h1>📡 Network Monitor</h1>
+                <span class="subtitle">实时网络拓扑 · 设备监测</span>
+            </div>
+            <div class="header-right">
+                <button id="scan-btn" onclick="startScan()" class="btn btn-primary">🔍 扫描</button>
+            </div>
+        </header>
+
+        <div id="stats-bar" class="stats-bar"><div class="stat-card"><span class="stat-label">加载中...</span></div></div>
+
+        <!-- Three-column layout: Device List | Graph+Traffic | Timeline -->
+        <div class="main-grid">
+            <!-- Left: Device List (1) -->
+            <div class="card device-card">
+                <div class="card-header"><h2>📱 设备列表</h2></div>
+                <div id="device-list" class="device-list"><div class="empty-state">加载中...</div></div>
+            </div>
+
+            <!-- Center: Graph + Traffic (2) -->
+            <div class="center-col">
+                <div class="card graph-card">
+                    <div class="card-header">
+                        <h2>🌐 实时网络拓扑</h2>
+                        <span class="graph-legend">
+                            <span class="legend-dot" style="background:#3b82f6"></span> 本机
+                            <span class="legend-dot" style="background:#22c55e"></span> LAN
+                            <span class="legend-dot" style="background:#eab308"></span> WAN
+                        </span>
+                    </div>
+                    <div id="network-graph" class="network-graph"></div>
+                </div>
+                <div id="traffic-panel" class="traffic-panel"><div class="traffic-empty">加载流量数据...</div></div>
+            </div>
+
+            <!-- Right: Timeline (1) -->
+            <div class="card timeline-card">
+                <div class="card-header"><h2>📋 活动记录</h2></div>
+                <div id="timeline-list" class="timeline-list"><div class="empty-state">加载中...</div></div>
+            </div>
+        </div>
+
+        <footer class="footer">
+            <span>Network Monitor v1.0 · 桌面版</span>
+            <span id="net-info">实时监测中</span>
+        </footer>
+    </div>
+
+    <!-- Device Modal -->
+    <div id="device-modal" class="modal" onclick="closeModal()">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-header"><h2 id="modal-title">设备详情</h2><button onclick="closeModal()" class="btn-close">&times;</button></div>
+            <div id="modal-status"></div>
+            <div id="modal-history"></div>
+        </div>
+    </div>
+
+    <!-- Connection Modal -->
+    <div id="conn-modal" class="modal" onclick="closeConnModal()">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-header"><h2 id="conn-title">🔗 活动连接</h2><button onclick="closeConnModal()" class="btn-close">&times;</button></div>
+            <div id="conn-list"></div>
+        </div>
+    </div>
+</body>
+</html>
