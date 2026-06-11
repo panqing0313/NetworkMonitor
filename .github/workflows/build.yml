@@ -55,13 +55,28 @@ jobs:
         run: |
           python scripts/build_app.py
 
-      - name: Upload Windows artifact
+      - name: Install NSIS
+        run: |
+          choco install nsis -y --no-progress
+        shell: pwsh
+
+      - name: Build Windows Installer (NSIS)
+        run: |
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
+        shell: pwsh
+
+      - name: Rename installer
+        run: |
+          move Network_Monitor_v1.0_Setup.exe dist\Network_Monitor_v1.0_Setup.exe
+        shell: cmd
+
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: Network-Monitor-Windows
-          path: dist/Network Monitor/
+          name: Network-Monitor-Windows-Setup
+          path: dist/Network_Monitor_v1.0_Setup.exe
 
-      - name: Create Windows installer (ZIP)
+      - name: Create Windows ZIP (fallback)
         run: |
           Compress-Archive -Path "dist/Network Monitor/*" -DestinationPath "dist/Network_Monitor_v1.0_win.zip"
 
@@ -84,6 +99,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: Network-Monitor-Windows-ZIP
+          path: release
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Network-Monitor-Windows-Setup
           path: release
 
       - name: Create GitHub Release
