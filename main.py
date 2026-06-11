@@ -49,7 +49,7 @@ def load_config():
         'history_retention_days': 30,
     }
     if os.path.exists(config_path):
-        with open(config_path) as f:
+        with open(config_path, encoding='utf-8') as f:
             cfg = yaml.safe_load(f) or {}
         defaults.update(cfg.get('monitor', {}))
     return defaults
