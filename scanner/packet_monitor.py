@@ -266,7 +266,7 @@ class ActivityMonitor:
         """
         with self._lock:
             entries = list(self._entries)
-            stats = dict(self._stats)
+            stats = self._stats.copy()
 
         # Aggregate by protocol
         protocols = []
